@@ -31,8 +31,9 @@ canvas { display: block; touch-action: none; }
   background: rgba(0,0,0,0.65); pointer-events: auto; z-index: 20;
 }
 .overlay h1 {
-  font-family: 'Arial Black', sans-serif; font-size: 48px; color: #FFD700;
-  text-shadow: 4px 4px 0 #000; margin-bottom: 10px; text-align: center;
+  font-family: 'Arial Black', sans-serif; font-size: 64px; color: #FFD700;
+  text-shadow: 4px 4px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+  margin-bottom: 10px; text-align: center;
 }
 .overlay p {
   font-family: 'Arial', sans-serif; font-size: 22px; color: #fff;
@@ -55,8 +56,8 @@ canvas { display: block; touch-action: none; }
   <div class="level-display" id="levelDisplay">Level 1</div>
 </div>
 <div class="overlay" id="startScreen">
-  <h1>Angry Glenn</h1>
-  <p>Drag the bird back to aim. Release to launch!<br>Knock down all the targets to win!</p>
+  <h1>ANGRY GLENN</h1>
+  <p>Drag the bird back to aim. Release to launch!<br>Knock down all the Glenns to win!</p>
   <button onclick="startGame()">PLAY</button>
 </div>
 <div class="overlay hidden" id="winScreen">
@@ -119,9 +120,14 @@ function sndWin() { [523,659,784,1047].forEach((f,i)=>setTimeout(()=>playSound(f
 function sndLose() { [400,300,200,100].forEach((f,i)=>setTimeout(()=>playSound(f,0.25,'sawtooth',0.25),i*150)); }
 
 // ===== PHYSICS =====
-const GRAVITY = 0.4 * (SCALE);
-const FRICTION = 0.98;
-const RESTITUTION = 0.3;
+const GRAVITY = 0.5 * (SCALE);
+const FRICTION = 0.98;       // air friction (unchanged)
+const RESTITUTION = 0.05;    // was 0.3 — near-zero bounce on everything
+const SETTLE_VEL = 0.6;      // velocity below this counts as "resting"
+const SETTLE_FRAMES = 45;    // ~0.75s of stillness before next bird
+const MAX_TURN_FRAMES = 480; // 8 seconds at 60fps — force-end turn after this
+const GROUND_FRICTION = 0.80; // extra friction multiplier on ground contact
+let turnTimer = 0;            // counts up during flying/settled phase
 
 class PhysicsBody {
   constructor(x, y, w, h, isStatic, type) {
@@ -140,26 +146,36 @@ class PhysicsBody {
   update() {
     if (this.isStatic || !this.alive) return;
     this.vy += GRAVITY;
-    this.vx *= 0.999;
+    this.vx *= 0.995;
     this.x += this.vx;
     this.y += this.vy;
     this.angle += this.angularVel;
-    this.angularVel *= 0.95;
+    this.angularVel *= 0.92;
     
     // Ground collision
     if (this.y + this.h > GROUND_Y) {
       this.y = GROUND_Y - this.h;
-      if (Math.abs(this.vy) > 1) {
+      if (Math.abs(this.vy) > SETTLE_VEL) {
         this.vy *= -RESTITUTION;
-        this.angularVel += this.vx * 0.02;
+        this.angularVel += this.vx * 0.01;
       } else { this.vy = 0; }
-      this.vx *= FRICTION;
-      if (Math.abs(this.vx) < 0.1) this.vx = 0;
+      this.vx *= GROUND_FRICTION;
+      if (Math.abs(this.vx) < 0.3) this.vx = 0;
     }
     
     // Walls
     if (this.x < 0) { this.x = 0; this.vx *= -RESTITUTION; }
     if (this.x + this.w > W) { this.x = W - this.w; this.vx *= -RESTITUTION; }
+    
+    // Progressive settle: dampen slow-moving objects so they stop
+    const spd = Math.abs(this.vx) + Math.abs(this.vy);
+    if (spd < 2.0) {
+      this.vx *= 0.90;
+      this.vy *= 0.90;
+      this.angularVel *= 0.85;
+      if (Math.abs(this.vx) < 0.15) this.vx = 0;
+      if (Math.abs(this.angularVel) < 0.005) this.angularVel = 0;
+    }
     
     if (this.hitFlash > 0) this.hitFlash--;
   }
@@ -188,7 +204,7 @@ let trajectoryPoints = [];
 
 const SLINGSHOT_X_RATIO = 0.15;
 const MAX_DRAG = 120;
-const LAUNCH_POWER = 0.18;
+const LAUNCH_POWER = 0.20;
 
 function getSlingX() { return W * SLINGSHOT_X_RATIO; }
 function getSlingY() { return GROUND_Y - 80 * SCALE; }
@@ -283,6 +299,8 @@ function resetBird() {
     settled: false
   };
   gameState = 'aiming';
+  turnTimer = 0;
+  settleTimer = 0;
 }
 
 // ===== INPUT =====
@@ -356,6 +374,8 @@ function onPointerUp(e) {
   gameState = 'flying';
   trajectoryPoints = [];
   birdsLeft--;
+  turnTimer = 0;
+  settleTimer = 0;
   sndLaunch();
   updateUI();
 }
@@ -409,8 +429,8 @@ function checkCollisions() {
       // Collision!
       const speed = Math.sqrt(bird.vx*bird.vx + bird.vy*bird.vy);
       
-      // Push the block
-      const force = speed * 0.5;
+      // Push the block (stronger transfer for better feel)
+      const force = speed * 0.7;
       if (Math.abs(dx) > Math.abs(dy)) {
         body.vx += (dx > 0 ? 1 : -1) * force * 0.3;
         bird.vx *= -RESTITUTION;
@@ -426,7 +446,7 @@ function checkCollisions() {
         body.alive = false;
         score += 500;
         sndDestroy();
-        spawnParticles(body.x + body.w/2, body.y + body.h/2, '#4CAF50', 15);
+        spawnParticles(body.x + body.w/2, body.y + body.h/2, '#F5D5B5', 15);
         updateUI();
       } else if (speed > 2) {
         sndHit();
@@ -453,8 +473,8 @@ function checkCollisions() {
   if (bird.y + bird.radius > GROUND_Y) {
     bird.y = GROUND_Y - bird.radius;
     bird.vy *= -RESTITUTION;
-    bird.vx *= 0.7;
-    if (Math.abs(bird.vy) < 1) bird.vy = 0;
+    bird.vx *= GROUND_FRICTION;
+    if (Math.abs(bird.vy) < SETTLE_VEL) bird.vy = 0;
   }
   
   // Walls
@@ -486,12 +506,12 @@ function checkBlockCollisions() {
           const relSpeed = Math.abs(a.vx - b.vx);
           if (a.type === 'target' && relSpeed > 4) {
             a.alive = false; score += 500; sndDestroy();
-            spawnParticles(a.x + a.w/2, a.y + a.h/2, '#4CAF50', 15);
+            spawnParticles(a.x + a.w/2, a.y + a.h/2, '#F5D5B5', 15);
             updateUI();
           }
           if (b.type === 'target' && relSpeed > 4) {
             b.alive = false; score += 500; sndDestroy();
-            spawnParticles(b.x + b.w/2, b.y + b.h/2, '#4CAF50', 15);
+            spawnParticles(b.x + b.w/2, b.y + b.h/2, '#F5D5B5', 15);
             updateUI();
           }
         } else {
@@ -502,12 +522,12 @@ function checkBlockCollisions() {
           const relSpeed = Math.abs(a.vy - b.vy);
           if (a.type === 'target' && relSpeed > 4) {
             a.alive = false; score += 500; sndDestroy();
-            spawnParticles(a.x + a.w/2, a.y + a.h/2, '#4CAF50', 15);
+            spawnParticles(a.x + a.w/2, a.y + a.h/2, '#F5D5B5', 15);
             updateUI();
           }
           if (b.type === 'target' && relSpeed > 4) {
             b.alive = false; score += 500; sndDestroy();
-            spawnParticles(b.x + b.w/2, b.y + b.h/2, '#4CAF50', 15);
+            spawnParticles(b.x + b.w/2, b.y + b.h/2, '#F5D5B5', 15);
             updateUI();
           }
         }
@@ -551,6 +571,37 @@ function updateUI() {
   document.getElementById('levelDisplay').textContent = 'Level ' + level;
 }
 
+function allSettled() {
+  // Check if all dynamic bodies + bird have effectively stopped
+  for (let body of bodies) {
+    if (!body.alive || body.isStatic) continue;
+    if (body.type === 'ground') continue;
+    const spd = Math.abs(body.vx) + Math.abs(body.vy) + Math.abs(body.angularVel);
+    if (spd > SETTLE_VEL) return false;
+  }
+  if (bird && bird.launched) {
+    const spd = Math.abs(bird.vx) + Math.abs(bird.vy);
+    if (spd > SETTLE_VEL) return false;
+  }
+  return true;
+}
+
+function endTurn(aliveTargets) {
+  settleTimer = 0;
+  turnTimer = 0;
+  if (aliveTargets.length === 0) return; // win handled elsewhere
+  if (birdsLeft > 0) {
+    resetBird();
+  } else {
+    gameState = 'lose';
+    sndLose();
+    setTimeout(() => {
+      document.getElementById('loseScore').textContent = 'Score: ' + score;
+      document.getElementById('loseScreen').classList.remove('hidden');
+    }, 1000);
+  }
+}
+
 function checkWinLose() {
   const aliveTargets = targets.filter(t => t.alive);
   
@@ -566,43 +617,23 @@ function checkWinLose() {
   }
   
   if (gameState === 'flying' || gameState === 'settled') {
-    // Check if bird stopped
-    if (bird) {
-      const speed = Math.sqrt(bird.vx*bird.vx + bird.vy*bird.vy);
-      if (speed < 0.5 && bird.y + bird.radius >= GROUND_Y - 5) {
-        settleTimer++;
-        if (settleTimer > 60) {
-          settleTimer = 0;
-          if (birdsLeft > 0 && aliveTargets.length > 0) {
-            resetBird();
-          } else if (birdsLeft === 0 && aliveTargets.length > 0) {
-            gameState = 'lose';
-            sndLose();
-            setTimeout(() => {
-              document.getElementById('loseScore').textContent = 'Score: ' + score;
-              document.getElementById('loseScreen').classList.remove('hidden');
-            }, 1000);
-          }
-        }
-      } else if (bird.x > W + 50 || bird.y > H + 50) {
-        // Off screen
-        settleTimer++;
-        if (settleTimer > 30) {
-          settleTimer = 0;
-          if (birdsLeft > 0 && aliveTargets.length > 0) {
-            resetBird();
-          } else if (birdsLeft === 0) {
-            gameState = 'lose';
-            sndLose();
-            setTimeout(() => {
-              document.getElementById('loseScore').textContent = 'Score: ' + score;
-              document.getElementById('loseScreen').classList.remove('hidden');
-            }, 1000);
-          }
-        }
-      } else {
-        settleTimer = 0;
-      }
+    turnTimer++;
+    
+    // Check if bird is off-screen
+    if (bird && (bird.x > W + 50 || bird.x < -50 || bird.y > H + 50)) {
+      settleTimer++;
+      if (settleTimer > 20) { endTurn(aliveTargets); return; }
+    } else if (allSettled()) {
+      // Everything stopped moving
+      settleTimer++;
+      if (settleTimer > SETTLE_FRAMES) { endTurn(aliveTargets); return; }
+    } else {
+      settleTimer = 0;
+    }
+    
+    // Force-end turn after MAX_TURN_FRAMES regardless
+    if (turnTimer > MAX_TURN_FRAMES) {
+      endTurn(aliveTargets);
     }
   }
 }
@@ -867,45 +898,62 @@ function drawBlocks() {
       ctx.arc(body.w*0.15, body.h*0.1, 2, 0, Math.PI*2);
       ctx.fill();
     } else if (body.type === 'target') {
-      // Target - green pig-like circle with Glenn face
+      // Target - cartoon Glenn face
       const cx = 0, cy = 0;
       const r = body.w / 2;
       
-      // Green circle body
-      ctx.fillStyle = '#66BB6A';
+      // Face circle (skin tone)
+      ctx.fillStyle = '#F5D5B5';
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI*2);
       ctx.fill();
-      ctx.strokeStyle = '#2E7D32';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#D4A76A';
+      ctx.lineWidth = 2;
       ctx.stroke();
       
-      // Snout
-      ctx.fillStyle = '#81C784';
+      // Short dark hair tuft on top
+      ctx.fillStyle = '#3E2723';
       ctx.beginPath();
-      ctx.ellipse(cx, cy + r*0.15, r*0.35, r*0.25, 0, 0, Math.PI*2);
+      ctx.arc(cx, cy - r*0.7, r*0.55, Math.PI*1.15, Math.PI*1.85);
       ctx.fill();
-      ctx.strokeStyle = '#388E3C';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      // Nostrils
-      ctx.fillStyle = '#2E7D32';
+      // Hair tuft sticking up
       ctx.beginPath();
-      ctx.arc(cx - r*0.12, cy + r*0.15, 2, 0, Math.PI*2);
-      ctx.arc(cx + r*0.12, cy + r*0.15, 2, 0, Math.PI*2);
+      ctx.moveTo(cx - r*0.15, cy - r*0.85);
+      ctx.quadraticCurveTo(cx, cy - r*1.15, cx + r*0.15, cy - r*0.85);
       ctx.fill();
       
-      // Eyes
+      // Big friendly eyes
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.arc(cx - r*0.3, cy - r*0.2, r*0.2, 0, Math.PI*2);
-      ctx.arc(cx + r*0.3, cy - r*0.2, r*0.2, 0, Math.PI*2);
+      ctx.arc(cx - r*0.3, cy - r*0.15, r*0.24, 0, Math.PI*2);
+      ctx.arc(cx + r*0.3, cy - r*0.15, r*0.24, 0, Math.PI*2);
+      ctx.fill();
+      // Pupils
+      ctx.fillStyle = '#2196F3';
+      ctx.beginPath();
+      ctx.arc(cx - r*0.28, cy - r*0.12, r*0.12, 0, Math.PI*2);
+      ctx.arc(cx + r*0.32, cy - r*0.12, r*0.12, 0, Math.PI*2);
       ctx.fill();
       ctx.fillStyle = '#000';
       ctx.beginPath();
-      ctx.arc(cx - r*0.25, cy - r*0.18, r*0.1, 0, Math.PI*2);
-      ctx.arc(cx + r*0.35, cy - r*0.18, r*0.1, 0, Math.PI*2);
+      ctx.arc(cx - r*0.27, cy - r*0.11, r*0.06, 0, Math.PI*2);
+      ctx.arc(cx + r*0.33, cy - r*0.11, r*0.06, 0, Math.PI*2);
       ctx.fill();
+      
+      // Wide smile
+      ctx.strokeStyle = '#C62828';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(cx, cy + r*0.2, r*0.4, Math.PI*0.15, Math.PI*0.85);
+      ctx.stroke();
+      // Smile fill (open mouth look)
+      ctx.fillStyle = '#E53935';
+      ctx.beginPath();
+      ctx.arc(cx, cy + r*0.2, r*0.35, Math.PI*0.18, Math.PI*0.82);
+      ctx.fill();
+      // Teeth line
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(cx - r*0.2, cy + r*0.2, r*0.4, r*0.06);
     }
     
     if (flash > 0) {
